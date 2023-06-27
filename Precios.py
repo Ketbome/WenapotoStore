@@ -1,53 +1,76 @@
 import requests
 import json
 import openpyxl
+import pandas as pd
 
-# Función para obtener el precio en una región específica
-def obtener_precio(appid, cc):
-    url = f"https://store.steampowered.com/api/appdetails?appids={appid}&cc={cc}"
+def obtener_precio(appids,nombres):
+    url = f"https://store.steampowered.com/api/appdetails?appids={','.join(appids)}&filters=price_overview&cc=ar"
     response = requests.get(url)
     data = response.json()
-    if response.status_code == 200 and str(appid) in data:
-        game_data = data[str(appid)]
-        if game_data["success"]:
-            game_info = game_data["data"]
-            if "price_overview" in game_info:
-                price_info = game_info["price_overview"]
-                return price_info.get("final_formatted", "Sin precio")
-    return "Sin precio"
-
-# Leer la lista de ID de juego desde un archivo de texto
-with open("juegos.txt", "r") as file:
-    juegos_ids = file.read().splitlines()
-
-# Crear un archivo Excel y una hoja de cálculo
-wb = openpyxl.Workbook()
-sheet = wb.active
-
-# Agregar encabezados de columna
-sheet.append(["ID", "Nombre", "Precio Chile", "Precio Argentina"])
-
-# Obtener la información de cada juego y agregarla al archivo Excel
-for appid in juegos_ids:
-    # Obtener información del juego para Argentina y Chile
-    nombre_juego = ""
-    precio_argentina = obtener_precio(appid, "ar")
-    precio_chile = obtener_precio(appid, "cl")
+    results = {}
     
-    # Obtener el nombre del juego
-    url_name = f"https://store.steampowered.com/api/appdetails?appids={appid}"
-    response_name = requests.get(url_name)
-    data_name = response_name.json()
-    if response_name.status_code == 200 and str(appid) in data_name:
-        game_data_name = data_name[str(appid)]
-        if game_data_name["success"]:
-            game_info_name = game_data_name["data"]
-            nombre_juego = game_info_name.get("name", "Sin nombre")
+    if response.status_code == 200:
+        count=0
+        for appid in appids:
+            nombre = nombres[count]
+            count+=1
+            if str(appid) in data:
+                game_data = data[str(appid)]
+                if game_data["success"]:
+                    game_info = game_data["data"]
+                    if "price_overview" in game_info:
+                        price_info = game_info["price_overview"]
+                        price_ars = price_info.get("final", "Sin precio")/100
+                        price_clp = convertir_a_clp(price_ars)
+                        discount_percent = price_info.get("discount_percent", "Sin precio")
+                        
+                        results[appid] = {
+                            "ID": appid,
+                            "Nombre": nombre,
+                            "Precio Argentino": "ARG$ "+str(price_ars),
+                            "Precio Argentino (CLP)": "CLP$ "+price_clp,
+                            "Descuento": discount_percent
+                        }
+    
+    return results
 
-    # Agregar los datos a la hoja de cálculo
-    sheet.append([appid, nombre_juego, precio_chile, precio_argentina])
 
-# Guardar el archivo Excel
-wb.save("juegos_precios.xlsx")
+# Obtener el tipo de cambio ARS/CLP
+url_tipo_cambio = "https://api.exchangerate-api.com/v4/latest/ARS"
+response_tipo_cambio = requests.get(url_tipo_cambio)
+data_tipo_cambio = response_tipo_cambio.json()
+tipo_cambio = data_tipo_cambio["rates"]["CLP"]
 
-print("La información se ha guardado en el archivo 'juegos_precios.xlsx'.")
+def convertir_a_clp(precio_ars):    
+    # Convertir el precio de ARS a CLP
+    precio_clp = float(precio_ars) * tipo_cambio
+    return f"{round(precio_clp, 2)}"
+
+
+# Leer las AppIDs y nombres desde el archivo de texto
+with open('juegos.txt', 'r', encoding='utf-8') as file:
+    juegos = [line.strip().split('\t') for line in file]
+
+# Obtener las AppIDs y nombres de la lista de juegos
+appids = [juego[0] for juego in juegos]
+nombres = [juego[1] for juego in juegos]
+
+# Dividir las AppIDs en lotes más pequeños
+lote_size = 1000
+appids_lotes = [appids[i:i+lote_size] for i in range(0, len(appids), lote_size)]
+nombres_lotes = [nombres[i:i+lote_size] for i in range(0, len(nombres), lote_size)]
+
+# Realizar las consultas por lotes y combinar los resultados
+resultados = {}
+count = 0
+for lote_id in appids_lotes:
+    lote_nombre = nombres_lotes[count]
+    resultados.update(obtener_precio(lote_id,lote_nombre))
+    count+=1
+    print(count,"000")
+
+# Crear un DataFrame con los resultados
+df = pd.DataFrame.from_dict(resultados, orient='index')
+
+# Exportar el DataFrame al archivo de Excel
+df.to_excel('precios_juegos.xlsx', index=False)
